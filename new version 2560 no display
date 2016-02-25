@@ -1,0 +1,281 @@
+/*
+ *
+ *
+ *
+ ******* FABLAB IVREA ARPA 2016 *********  
+ * 
+ *  Sistema di controllo di arpa laser ****** 
+ *
+ *
+ *
+ */ 
+ 
+// gestione pin della scheda AUDIO MP3 
+#define YP A2   // must be an analog pin, use "An" notation!
+#define XM A1   // must be an analog pin, use "An" notation!
+#define YM 54   // can be a digital pin, this is A0
+#define XP 57   // can be a digital pin, this is A3 
+
+//Note
+byte note[8] = {60, 62, 64, 65, 67, 69, 71, 72};
+
+//************************************************ 
+
+#define USE_GPIO_INIT  0
+#define USE_SPI_MIDI   0
+#define USE_PATCH_INIT  !USE_GPIO_INIT
+#define USE_SERIAL_MIDI !USE_SPI_MIDI
+#define USE_SPI         (USE_SPI_MIDI||USE_PATCH_INIT)
+
+ 
+#if USE_SPI
+#include <SPI.h>
+#endif
+#if USE_SERIAL_MIDI
+#include <SoftwareSerial.h>
+SoftwareSerial midiSerial(2,3); // Soft TX on 3, RX not used (2 is an input anyway, for VS_DREQ)
+#endif
+ 
+#if USE_SPI
+#define VS_XCS    6 // Control Chip Select Pin (for accessing SPI Control/Status registers)
+#define VS_XDCS   7 // Data Chip Select / BSYNC Pin
+#define VS_DREQ   2 // Data Request Pin: Player asks for more data
+#endif
+
+#if USE_GPIO_INIT
+#define VS_GPIO1  4  // Mode selection (0 = file / 1 = real time MIDI)
+#endif
+ 
+#define VS_RESET  8 //Reset is active low
+ 
+#if USE_PATCH_INIT
+//Write to VS10xx register
+//SCI: Data transfers are always 16bit. When a new SCI operation comes in 
+//DREQ goes low. We then have to wait for DREQ to go high again.
+//XCS should be low for the full duration of operation.
+void VSWriteRegister(unsigned char addressbyte, unsigned char highbyte, unsigned char lowbyte){
+  while(!digitalRead(VS_DREQ)) ; //Wait for DREQ to go high indicating IC is available
+  digitalWrite(VS_XCS, LOW); //Select control
+ 
+  //SCI consists of instruction byte, address byte, and 16-bit data word.
+  SPI.transfer(0x02); //Write instruction
+  SPI.transfer(addressbyte);
+  SPI.transfer(highbyte);
+  SPI.transfer(lowbyte);
+  while(!digitalRead(VS_DREQ)) ; //Wait for DREQ to go high indicating command is complete
+  digitalWrite(VS_XCS, HIGH); //Deselect Control
+}
+
+const unsigned short sVS1053b_Realtime_MIDI_Plugin[28] = { /* Compressed plugin */
+  0x0007, 0x0001, 0x8050, 0x0006, 0x0014, 0x0030, 0x0715, 0xb080, /*    0 */
+  0x3400, 0x0007, 0x9255, 0x3d00, 0x0024, 0x0030, 0x0295, 0x6890, /*    8 */
+  0x3400, 0x0030, 0x0495, 0x3d00, 0x0024, 0x2908, 0x4d40, 0x0030, /*   10 */
+  0x0200, 0x000a, 0x0001, 0x0050,
+};
+ 
+void VSLoadUserCode(void) {
+  int i = 0;
+ 
+  while (i<sizeof(sVS1053b_Realtime_MIDI_Plugin)/sizeof(sVS1053b_Realtime_MIDI_Plugin[0])) {
+    unsigned short addr, n, val;
+    addr = sVS1053b_Realtime_MIDI_Plugin[i++];
+    n = sVS1053b_Realtime_MIDI_Plugin[i++];
+    while (n--) {
+      val = sVS1053b_Realtime_MIDI_Plugin[i++];
+      VSWriteRegister(addr, val >> 8, val & 0xFF);
+    }
+  }
+}
+#endif
+ 
+ 
+//********************************************************************************* 
+void setup() {
+  
+#if USE_SPI
+  pinMode(VS_DREQ, INPUT);
+  pinMode(VS_XCS, OUTPUT);
+  pinMode(VS_XDCS, OUTPUT);
+  digitalWrite(VS_XCS, HIGH); //Deselect Control
+  digitalWrite(VS_XDCS, HIGH); //Deselect Data
+#endif
+#if USE_SERIAL_MIDI
+  midiSerial.begin(31250);
+#endif
+ 
+  pinMode(VS_RESET, OUTPUT);
+ 
+ // Serial.begin(57600); //Use serial for debugging 
+ // Serial.println("\n******\n");
+ //  Serial.println("MP3 Shield Example");
+ 
+  //Initialize VS1053 chip 
+  digitalWrite(VS_RESET, LOW); //Put VS1053 into hardware reset
+ 
+#if USE_SPI
+  //Setup SPI for VS1053
+  pinMode(10, OUTPUT); //Pin 10 must be set as an output for the SPI communication to work
+  SPI.begin();
+  SPI.setBitOrder(MSBFIRST);
+  SPI.setDataMode(SPI_MODE0);
+ 
+ 
+  SPI.setClockDivider(SPI_CLOCK_DIV16); //Set SPI bus speed to 1MHz (16MHz / 16 = 1MHz)
+  SPI.transfer(0xFF); //Throw a dummy byte at the bus
+#endif
+ 
+  delayMicroseconds(1);
+  digitalWrite(VS_RESET, HIGH); //Bring up VS1053
+  
+#if USE_PATCH_INIT
+  VSLoadUserCode();
+#else
+  pinMode(VS_GPIO1, OUTPUT);
+  digitalWrite(VS_GPIO1, HIGH);  // Enable real time MIDI mode
+#endif
+
+ 
+  talkMIDI(0x90, 0x07, 120); //0xB0 is channel message, set channel volume to near max (127)
+  talkMIDI(0xB0, 0, 0x00); //Default bank GM1
+  talkMIDI(0xC0, 46, 0); //Set instrument number. 0xC0 is a 1 data byte command. 46 = ARPA
+  
+  
+//*  byte bi;
+//*  for (bi=0;bi<8;bi++) {
+//*    suona(bi);
+//*    delay(300);
+//*  }
+}
+ 
+void sendMIDI(byte data)
+{
+#if USE_SPI_MIDI
+  SPI.transfer(0);
+  SPI.transfer(data);
+#else
+  midiSerial.write(data);
+#endif
+}
+ 
+//Plays a MIDI note. Doesn't check to see that cmd is greater than 127, or that data values are less than 127
+void talkMIDI(byte cmd, byte data1, byte data2) {
+#if USE_SPI_MIDI
+  //
+  // Wait for chip to be ready (Unlikely to be an issue with real time MIDI)
+  //
+  while (!digitalRead(VS_DREQ))
+  ;
+  digitalWrite(VS_XDCS, LOW);
+#endif
+  sendMIDI(cmd);
+  //Some commands only have one data byte. All cmds less than 0xBn have 2 data bytes 
+  //(sort of: http://253.ccarh.org/handout/midiprotocol/)
+  if( (cmd & 0xF0) <= 0xB0 || (cmd & 0xF0) >= 0xE0) {
+    sendMIDI(data1);
+    sendMIDI(data2);
+  } else {
+    sendMIDI(data1);
+  }
+ 
+#if USE_SPI_MIDI
+  digitalWrite(VS_XDCS, HIGH);
+#endif
+}
+ 
+//Send a MIDI note-on message.  Like pressing a piano key
+//channel ranges from 0-15
+void noteOn(byte channel, byte note, byte attack_velocity) {
+  talkMIDI( (0x90 | channel), note, attack_velocity);
+}
+ 
+//Send a MIDI note-off message.  Like releasing a piano key
+void noteOff(byte channel, byte note, byte release_velocity) {
+  talkMIDI( (0x80 | channel), note, release_velocity);
+}
+  
+byte suoni[8] = {0,0,0,0,0,0,0,0};
+
+void suona(byte index) {
+  if (suoni[index] == 0) {
+    noteOn(0, note[index], 127);
+    suoni[index] = 1;
+  }
+}
+void suonaOff(byte index) {
+  suoni[index] = 0;
+}
+ void loop() { 
+
+  // *****************  SUONARE in base all'ingresso analogico     *********
+  //=================================================================
+  
+  //int instrument = 46; // ARPA ***********************
+  //int note; // nota da suonare ***********************
+  int value1; 
+  int value2;
+  int value3;
+  int value4;
+  int value5;
+  int value6;
+  int value7;
+  int value8;
+  
+  //noteOn(0, 60, 127);
+  //Serial.print (analogRead(A8));
+  if (analogRead(A8) <= 500 ){  
+    //Serial.println(note[0], DEC);
+    suona(0);
+  }else{
+    suonaOff(0);
+  // noteOff(0, note, 127);
+    }  
+  if (analogRead(A9) <= 500){
+    //Serial.println(note[1], DEC);
+    suona(1);
+  }else{
+    suonaOff(1);
+  //  noteOff(0, note, 127);
+    }
+  if (analogRead(A10) <= 500){
+    //Serial.println(note[2], DEC);
+    suona(2);
+  }else{
+    suonaOff(2);
+  //  noteOff(0, note, 127);
+    }
+  if (analogRead(A11) <= 500){
+    //Serial.println(note[3], DEC);
+    suona(3);
+  }else{
+    suonaOff(3);
+  //  noteOff(0, note, 127);
+    }
+  if (analogRead(A12) <= 500){
+    //Serial.println(note[4], DEC);
+    suona(4);
+  }else{
+    suonaOff(4);
+  //  noteOff(0, note, 127);
+    }
+  if (analogRead(A13) <= 500){
+    //Serial.println(note[5], DEC);
+    suona(5);
+  }else{
+    suonaOff(5);
+  //  noteOff(0, note, 127);
+    }
+  if (analogRead(A14) <= 500){
+    //Serial.println(note[6], DEC);
+    suona(6);
+  }else{
+    suonaOff(6);
+  //  noteOff(0, note, 127);
+    }
+  if (analogRead(A15) <= 500){
+    //Serial.println(note[7], DEC);
+    suona(7);
+  }else{
+    suonaOff(7);
+  //  noteOff(0, note, 127);
+    } 
+}
