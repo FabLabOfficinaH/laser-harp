@@ -5,3 +5,4 @@ This project consists in the creation of a musical instrument, in this particula
 
 The project uses an Arduino Mega 2560 with a shield MP3 SparkFun - eight laser diodes 5V 5mW and eight LDR which detect the presence / absence of the laser beam. The whole system is positioned on a rigid structure in wood which allows the alignment of lasers with the LDR, even remote. We also added to the first version a color touch display which controls the octaves and the resonance frequencies.
 
+The new version of the software only requires an Arduino Mega and the MP3 shield. It is not necessary to use the TFT and TouchScreen libraries. Soon we will add the code for a smart display that only uses the Serial Port and doesn't weightens nor complicates the software.
